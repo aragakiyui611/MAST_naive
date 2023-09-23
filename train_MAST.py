@@ -307,4 +307,4 @@ for _ in range(10):
     threshold -= 0.05
     img_selected, labels_selected = collect_samples_with_pseudo_label(dset_loaders, Model_R, threshold)
     selftrain_t(Model_R, img_selected, labels_selected)
-    img_selected, labels_selected
+
