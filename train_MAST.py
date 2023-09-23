@@ -217,7 +217,7 @@ def pretrain_on_src(Model_R):
         train_mse_loss += regressor_loss.item()
         train_icg_loss += icg_loss.item()
         train_total_loss += total_loss.item()
-        if iter_num % 500 == 0:
+        if iter_num % test_interval == 0:
             print((f"Iter {iter_num:05d}, "
                   f"Average Cross Entropy Loss: {train_cross_loss / float(test_interval):.4f}; "
                   f"Average MSE Loss: {train_mse_loss / float(test_interval):.4f}; "
