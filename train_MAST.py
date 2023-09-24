@@ -1,11 +1,13 @@
 import argparse
 import os
+from collections import deque
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import lib.model as model
@@ -231,11 +233,10 @@ def pretrain_on_src(Model_R):
 def collect_samples_with_pseudo_label(loader, model, threshold):
     '''Pseudo label generation and selection on target dataset'''
     model.eval()
-    img_selected = []
-    labels_selected = []
+    img_lbl = deque()
     with torch.no_grad():
         for (imgs, labels) in tqdm(loader['val']):
-            if len(img_selected) >501:
+            if len(img_lbl) > 2000:
                 break
             labels_source = labels.to(device)
             labels1 = labels_source[:, 2]
@@ -253,13 +254,13 @@ def collect_samples_with_pseudo_label(loader, model, threshold):
             imgs = imgs.to(device)
             cls, reg, f = model(imgs)
             sel = F.softmax(cls, dim=-1).max(-1)[0] > threshold
+            if sum(sel) == 0: continue
             preds = bins_deltas_to_ts_batch(cls, reg, ctr)
-            img_selected.append(imgs[sel].cpu())
-            labels_selected.append(preds[sel].cpu())
-    return img_selected, labels_selected
+            img_lbl.extend(list(zip(imgs[sel].cpu(), preds[sel].cpu())))
+    return img_lbl
 
 
-def selftrain_t(Model_R, img_selected, labels_selected):
+def selftrain_t(Model_R, sample_selected):
     criterion = {"cls": xentropy, "reg": nn.MSELoss(), "icg": ExplicitInterClassGraphLoss()}
     optimizer_dict = [{"params": filter(lambda p: p.requires_grad, Model_R.model_fc.parameters()), "lr": 0.03},
                     {"params": filter(lambda p: p.requires_grad, Model_R.cls_layer.parameters()), "lr": 0.01},
@@ -269,13 +270,27 @@ def selftrain_t(Model_R, img_selected, labels_selected):
     param_lr = []
     for param_group in optimizer.param_groups:
         param_lr.append(param_group["lr"])
-    test_interval = 100
+    test_interval = 5
 
-    for iter_num, (img, labelt) in enumerate(zip(img_selected, labels_selected)):
+    for iter_num, (img, labelt) in enumerate(sample_selected):
         Model_R.train()
         optimizer = inv_lr_scheduler(param_lr, optimizer, iter_num, init_lr=args.lr, gamma=args.gamma, power=0.75,
                                     weight_decay=0.0005)
         optimizer.zero_grad()
+        # pass src data
+        data_source = iter_source.next()
+        inputs_source, labels_source = data_source
+        labels_source = labels_source[:, 2].float()
+        cls_s, reg_s, fs = Model_R(inputs_source.cuda())
+        bins_s, deltas_s = t_to_bin_delta_batch(labels_source.cuda(), ctr)
+        classifier_loss_s = criterion["cls"](cls_s, bins_s)
+        regressor_loss_s = criterion['reg'](reg_s, deltas_s)
+        icg_loss_s = criterion['icg'](torch.max(bins_s, dim=-1)[1], fs) * 1.0
+        total_loss_s = classifier_loss_s + regressor_loss_s + icg_loss_s
+        total_loss_s *= 0.1
+        total_loss_s.backward()
+
+        # pass tgt data
         cls, reg, f = Model_R(img.cuda())
         bins, deltas = t_to_bin_delta_batch(labelt.cuda(), ctr)
         classifier_loss = criterion["cls"](cls, bins)
@@ -301,10 +316,13 @@ def selftrain_t(Model_R, img_selected, labels_selected):
 
 Model_R = Model_Regression().to(device)
 # pretrain_on_src(Model_R)
-Model_R.load_state_dict(torch.load('checkpoints/s->n-it_6000-MAE_0.072.pth')['model'])
-threshold = 0.8
+Model_R.load_state_dict(torch.load('checkpoints/n->c-it_90-MAE_0.304.pth')['model'])
+iter_source = iter(dset_loaders["train"])
+threshold = 0.5
+
 for _ in range(10):
-    threshold -= 0.05
-    img_selected, labels_selected = collect_samples_with_pseudo_label(dset_loaders, Model_R, threshold)
-    selftrain_t(Model_R, img_selected, labels_selected)
+    threshold -= 0.02
+    img_selected = collect_samples_with_pseudo_label(dset_loaders, Model_R, threshold)
+    img_selected = DataLoader(img_selected, batch_size=36, shuffle=True, num_workers=16)
+    selftrain_t(Model_R, img_selected)
 
