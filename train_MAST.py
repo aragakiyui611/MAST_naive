@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 import lib.model as model
 import lib.transform as tran
@@ -116,7 +115,7 @@ def Regression_test(loader, model, optimizer=None, save=False, iter_num=None):
             # MAE[1] += torch.nn.L1Loss(reduction='sum')(pred[:, 1], labels[:, 1])
             # MSE[2] += torch.nn.MSELoss(reduction='sum')(pred[:, 2], labels[:, 2])
             # MAE[2] += torch.nn.L1Loss(reduction='sum')(pred[:, 2], labels[:, 2])
-            MSE[3] += torch.nn.MSELoss(reduction='sum')(pred, labels)
+            # MSE[3] += torch.nn.MSELoss(reduction='sum')(pred, labels)
             MAE[3] += torch.nn.L1Loss(reduction='sum')(pred, labels)
             number += imgs.size(0)
     for j in range(4):
@@ -124,7 +123,7 @@ def Regression_test(loader, model, optimizer=None, save=False, iter_num=None):
         MAE[j] = MAE[j] / number
     # print(f"\tMSE: {MSE[0]},{MSE[1]},{MSE[2]}")
     # print(f"\tMAE: {MAE[0]},{MAE[1]},{MAE[2]}")
-    print(f"\tMSEall : {MSE[3]}")
+    # print(f"\tMSEall : {MSE[3]}")
     print(f"\tMAEall : {MAE[3]}")
     if save:
         torch.save({'model':model.state_dict(), 'optim': optimizer.state_dict()},
@@ -230,13 +229,15 @@ def pretrain_on_src(Model_R):
             Regression_test(dset_loaders['test'], Model_R, optimizer=optimizer, save=True, iter_num=iter_num)
 
 
-def collect_samples_with_pseudo_label(loader, model, threshold):
+def collect_samples_with_pseudo_label(loader, model, threshold, sample_iter):
     '''Pseudo label generation and selection on target dataset'''
     model.eval()
     img_lbl = deque()
     with torch.no_grad():
-        for (imgs, labels) in tqdm(loader['val']):
-            if len(img_lbl) > 2000:
+        for i, (imgs, labels) in enumerate(loader['val']):
+            print(f'iter {i}: collected {len(img_lbl)} samples', end='\r', flush=True)
+            if i >= sample_iter:
+                print(f'---------finished, collected {len(img_lbl)} samples with {i} iters---------')
                 break
             labels_source = labels.to(device)
             labels1 = labels_source[:, 2]
