@@ -1,0 +1,31 @@
+Mean Absolute Error
+resnet: trained only on src and test on tgt
+IICG: implicit icg, using regression model to get supervision graph
+EICG: Explicit icg, the same as in paper
+
+S->N:
+resnet18 trained on S: 0.050137199461460114
+RSD: 0.043
+MAST w/ IICG: 0.030931735411286354
+MAST w/o EICG: 0.04178021848201752
+MAST w/ EICG: 0.02486773207783699
+
+C->N:
+resnet18 trained on C:
+RSD: 0.25679391622543335
+MAST w/ IICG:
+MAST w/ EICG: 0.20574526488780975
+
+S->C:
+RSD: 0.026694314554333687
+MAST w/EICG: 0.01243969053030014
+
+N->C:
+RSD: 0.1536242812871933
+MAST w/EICG: 0.12649418413639069
+
+N->S:
+RSD: 0.28479480743408203
+
+C->S:
+RSD: 0.17162398993968964
