@@ -15,81 +15,66 @@ from lib.MAST import (ExplicitInterClassGraphLoss, bins_deltas_to_ts_batch,
                       grid_xyz, t_to_bin_delta_batch, xentropy)
 from lib.read_data import ImageList_r as ImageList
 
-parser = argparse.ArgumentParser(description='PyTorch DAregre experiment')
-parser.add_argument('--gpu_id', type=str, nargs='?', default='0', help="device id to run")
-parser.add_argument('--src', type=str, default='c', metavar='S',
-                    help='source dataset')
-parser.add_argument('--tgt', type=str, default='n', metavar='S',
-                    help='target dataset')
-parser.add_argument('--lr', type=float, default=0.03,
-                        help='init learning rate for fine-tune')
-parser.add_argument('--gamma', type=float, default=0.0001,
-                        help='learning rate decay')
-parser.add_argument('--seed', type=int, default=0,
-                        help='random seed')
-args = parser.parse_args()
 
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
-if not os.path.exists('checkpoints'):
-    os.mkdir('checkpoints')
-
-torch.manual_seed(args.seed)
-np.random.seed(args.seed)
+torch.manual_seed(0)
+np.random.seed(0)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
+if not os.path.exists('checkpoints'):
+    os.mkdir('checkpoints')
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 ctr = grid_xyz()
 
-data_transforms = {
-    'train': tran.rr_train(resize_size=224),
-    'val': tran.rr_train(resize_size=224),
-    'test': tran.rr_eval(resize_size=224),
-}
-# set dataset
-batch_size = {"train": 64, "val": 64, "test": 64}
-c="data/image_list/color_train.txt"
-n="data/image_list/noisy_train.txt"
-s="data/image_list/scream_train.txt"
 
-c_t="data/image_list/color_test.txt"
-n_t="data/image_list/noisy_test.txt"
-s_t="data/image_list/scream_test.txt"
+def make_dataset(args):
+    data_transforms = {
+        'train': tran.rr_train(resize_size=224),
+        'val': tran.rr_train(resize_size=224),
+        'test': tran.rr_eval(resize_size=224),
+    }
+    # set dataset
+    batch_size = {"train": args.train_bs, "val": args.train_bs, "test": args.test_bs}
+    c="data/image_list/color_train.txt"
+    n="data/image_list/noisy_train.txt"
+    s="data/image_list/scream_train.txt"
 
-if args.src =='c':
-    source_path = c
-elif args.src =='n':
-    source_path = n
-elif args.src =='s':
-    source_path = s
+    c_t="data/image_list/color_test.txt"
+    n_t="data/image_list/noisy_test.txt"
+    s_t="data/image_list/scream_test.txt"
 
-if args.tgt =='c':
-    target_path = c
-elif args.tgt =='n':
-    target_path = n
-elif args.tgt =='s':
-    target_path = s
+    if args.src =='c':
+        source_path = c
+    elif args.src =='n':
+        source_path = n
+    elif args.src =='s':
+        source_path = s
 
-if args.tgt =='c':
-    target_path_t = c_t
-elif args.tgt =='n':
-    target_path_t = n_t
-elif args.tgt =='s':
-    target_path_t = s_t
+    if args.tgt =='c':
+        target_path = c
+    elif args.tgt =='n':
+        target_path = n
+    elif args.tgt =='s':
+        target_path = s
 
-dsets = {"train": ImageList(open(source_path).readlines(), transform=data_transforms["train"]),
-         "val": ImageList(open(target_path).readlines(),transform=data_transforms["val"]),
-         "test": ImageList(open(target_path_t).readlines(),transform=data_transforms["test"])}
-dset_loaders = {x: torch.utils.data.DataLoader(dsets[x], batch_size=batch_size[x],
-                                               shuffle=True, num_workers=16)
-                for x in ['train', 'val']}
-dset_loaders["test"] = torch.utils.data.DataLoader(dsets["test"], batch_size=batch_size["test"],
-                                                   shuffle=False, num_workers=16)
+    if args.tgt =='c':
+        target_path_t = c_t
+    elif args.tgt =='n':
+        target_path_t = n_t
+    elif args.tgt =='s':
+        target_path_t = s_t
 
-dset_sizes = {x: len(dsets[x]) for x in ['train', 'val','test']}
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    dsets = {"train": ImageList(open(source_path).readlines(), transform=data_transforms["train"]),
+            "val": ImageList(open(target_path).readlines(),transform=data_transforms["val"]),
+            "test": ImageList(open(target_path_t).readlines(),transform=data_transforms["test"])}
+    dset_loaders = {x: torch.utils.data.DataLoader(dsets[x], batch_size=batch_size[x],
+                                                shuffle=True, num_workers=16)
+                    for x in ['train', 'val']}
+    dset_loaders["test"] = torch.utils.data.DataLoader(dsets["test"], batch_size=batch_size["test"],
+                                                    shuffle=False, num_workers=16)
+    return batch_size, dset_loaders
 
 
-def Regression_test(loader, model, optimizer=None, save=False, iter_num=None):
+def Regression_test(args, loader, model, optimizer=None, save=False, iter_num=None):
     model.eval()
     MSE = [0, 0, 0, 0]
     MAE = [0, 0, 0, 0]
@@ -156,7 +141,7 @@ class Model_Regression(nn.Module):
         return cls, reg, feature
 
 
-def pretrain_on_src(Model_R):
+def pretrain_on_src(args, Model_R):
     criterion = {"cls": xentropy, "reg": nn.MSELoss(), "icg": ExplicitInterClassGraphLoss()}
     optimizer_dict = [{"params": filter(lambda p: p.requires_grad, Model_R.model_fc.parameters()), "lr": 0.1},
                     {"params": filter(lambda p: p.requires_grad, Model_R.cls_layer.parameters()), "lr": 0.01},
@@ -210,7 +195,7 @@ def pretrain_on_src(Model_R):
         
         classifier_loss = criterion["cls"](cls, bins)
         regressor_loss = criterion['reg'](reg, deltas)
-        icg_loss = criterion['icg'](torch.max(bins, dim=-1)[1], f) * cfg.icg_weight
+        icg_loss = criterion['icg'](torch.max(bins, dim=-1)[1], f) * args.icg_weight
         total_loss = classifier_loss + regressor_loss + icg_loss
         total_loss.backward()
         optimizer.step()
@@ -226,7 +211,7 @@ def pretrain_on_src(Model_R):
                   f"Average Training Loss: {train_total_loss / float(test_interval):.4f}"))
             train_cross_loss = train_mse_loss = train_icg_loss = train_total_loss = 0.0
         if (iter_num % test_interval) == 0:
-            Regression_test(dset_loaders['test'], Model_R, optimizer=optimizer, save=True, iter_num=iter_num)
+            Regression_test(args, dset_loaders['test'], Model_R, optimizer=optimizer, save=True, iter_num=iter_num)
 
 
 def collect_samples_with_pseudo_label(model, threshold, sample_iter):
@@ -265,7 +250,7 @@ def collect_samples_with_pseudo_label(model, threshold, sample_iter):
     return img_lbl
 
 
-def selftrain_t(Model_R, sample_selected):
+def selftrain_t(args, Model_R, sample_selected):
     global iter_source
     criterion = {"cls": xentropy, "reg": nn.MSELoss(), "icg": ExplicitInterClassGraphLoss()}
     optimizer_dict = [{"params": filter(lambda p: p.requires_grad, Model_R.model_fc.parameters()), "lr": 0.03},
@@ -295,9 +280,9 @@ def selftrain_t(Model_R, sample_selected):
         bins_s, deltas_s = t_to_bin_delta_batch(labels_source.cuda(), ctr)
         classifier_loss_s = criterion["cls"](cls_s, bins_s)
         regressor_loss_s = criterion['reg'](reg_s, deltas_s)
-        icg_loss_s = criterion['icg'](torch.max(bins_s, dim=-1)[1], fs) * cfg.icg_weight
+        icg_loss_s = criterion['icg'](torch.max(bins_s, dim=-1)[1], fs) * args.icg_weight
         total_loss_s = classifier_loss_s + regressor_loss_s + icg_loss_s
-        total_loss_s *= cfg.src_loss_weight
+        total_loss_s *= args.src_loss_weight
         total_loss_s.backward()
 
         # pass tgt data
@@ -305,7 +290,7 @@ def selftrain_t(Model_R, sample_selected):
         bins, deltas = t_to_bin_delta_batch(labelt.cuda(), ctr)
         classifier_loss = criterion["cls"](cls, bins)
         regressor_loss = criterion['reg'](reg, deltas)
-        icg_loss = criterion['icg'](torch.max(bins, dim=-1)[1], f) * cfg.icg_weight
+        icg_loss = criterion['icg'](torch.max(bins, dim=-1)[1], f) * args.icg_weight
         total_loss = classifier_loss + regressor_loss + icg_loss
         total_loss.backward()
         optimizer.step()
@@ -320,24 +305,35 @@ def selftrain_t(Model_R, sample_selected):
                   f"Average ICG Loss: {train_icg_loss / float(test_interval):.4f}; "
                   f"Average Training Loss: {train_total_loss / float(test_interval):.4f}"))
             train_cross_loss = train_mse_loss = train_icg_loss = train_total_loss = 0.0
-            Regression_test(dset_loaders['test'], Model_R)
+            Regression_test(args, dset_loaders['test'], Model_R)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='PyTorch DAregre experiment')
+    parser.add_argument('--gpu_id', type=str, nargs='?', default='0', help="device id to run")
+    parser.add_argument('--src', type=str, default='c', metavar='S', help='source dataset')
+    parser.add_argument('--tgt', type=str, default='n', metavar='S', help='target dataset')
+    args = parser.parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
+    args.train_bs = 128
+    args.test_bs = 128
+    args.threshold = 0.47
+    args.threshold_decay = 0.0
+    args.src_loss_weight = 1.0
+    args.icg_weight = 1.0
+    args.lr = 0.03  # init learning rate for fine-tune
+    args.gamma = 0.0001  # learning rate decay
+    batch_size, dset_loaders = make_dataset(args)
+    Model_R = Model_Regression().to(device)
 
 
 
-class cfg():
-    threshold = 0.47
-    threshold_decay = 0.0
-    src_loss_weight = 1.0
-    icg_weight = 1.0
-
-
-Model_R = Model_Regression().to(device)
-# pretrain_on_src(Model_R)
-Model_R.load_state_dict(torch.load('checkpoints/n->c-it_90-MAE_0.304.pth')['model'])
-iter_source = iter(dset_loaders["train"])
-iter_target = iter(dset_loaders["val"])
-for _ in range(10):
-    cfg.threshold -= cfg.threshold_decay
-    img_selected = collect_samples_with_pseudo_label(Model_R, cfg.threshold, sample_iter=200)
-    img_selected = DataLoader(img_selected, batch_size=64, shuffle=True, num_workers=16)
-    selftrain_t(Model_R, img_selected)
+    # pretrain_on_src(args, Model_R)
+    Model_R.load_state_dict(torch.load('checkpoints/n->c-it_90-MAE_0.304.pth')['model'])
+    iter_source = iter(dset_loaders["train"])
+    iter_target = iter(dset_loaders["val"])
+    for _ in range(10):
+        args.threshold -= args.threshold_decay
+        img_selected = collect_samples_with_pseudo_label(Model_R, args.threshold, sample_iter=200)
+        img_selected = DataLoader(img_selected, batch_size=args.train_bs, shuffle=True, num_workers=16)
+        selftrain_t(args, Model_R, img_selected)
