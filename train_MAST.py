@@ -141,11 +141,11 @@ class Model_Regression(nn.Module):
         return cls, reg, feature
 
 
-def pretrain_on_src(args, Model_R):
+def pretrain_on_src(args, model):
     criterion = {"cls": xentropy, "reg": nn.MSELoss(), "icg": ExplicitInterClassGraphLoss()}
-    optimizer_dict = [{"params": filter(lambda p: p.requires_grad, Model_R.model_fc.parameters()), "lr": 0.1},
-                    {"params": filter(lambda p: p.requires_grad, Model_R.cls_layer.parameters()), "lr": 0.01},
-                    {"params": filter(lambda p: p.requires_grad, Model_R.reg_layer.parameters()), "lr": 0.01}]
+    optimizer_dict = [{"params": filter(lambda p: p.requires_grad, model.model_fc.parameters()), "lr": 0.1},
+                    {"params": filter(lambda p: p.requires_grad, model.cls_layer.parameters()), "lr": 0.01},
+                    {"params": filter(lambda p: p.requires_grad, model.reg_layer.parameters()), "lr": 0.01}]
     optimizer = optim.SGD(optimizer_dict, lr=0.1, momentum=0.9, weight_decay=0.0005, nesterov=True)
 
     train_cross_loss = train_mse_loss = train_icg_loss = train_total_loss = 0.0
@@ -161,7 +161,7 @@ def pretrain_on_src(args, Model_R):
     num_iter = 20002
     print(args)
     for iter_num in range(1, num_iter + 1):
-        Model_R.train()
+        model.train()
         optimizer = inv_lr_scheduler(param_lr, optimizer, iter_num, init_lr=args.lr, gamma=args.gamma, power=0.75,
                                     weight_decay=0.0005)
         optimizer.zero_grad()
@@ -191,10 +191,10 @@ def pretrain_on_src(args, Model_R):
         bins, deltas = t_to_bin_delta_batch(labels_source, ctr)
         inputs_s = inputs.narrow(0, 0, batch_size["train"])
         # inputs_t = inputs.narrow(0, batch_size["train"], batch_size["train"])
-        cls, reg, f = Model_R(inputs_s)
+        cls, reg, f = model(inputs_s)
         
-        classifier_loss = criterion["cls"](cls, bins)
-        regressor_loss = criterion['reg'](reg, deltas)
+        classifier_loss = criterion["cls"](cls, bins) * args.cls_weight
+        regressor_loss = criterion['reg'](reg, deltas) * args.reg_weight
         icg_loss = criterion['icg'](torch.max(bins, dim=-1)[1], f) * args.icg_weight
         total_loss = classifier_loss + regressor_loss + icg_loss
         total_loss.backward()
@@ -211,7 +211,7 @@ def pretrain_on_src(args, Model_R):
                   f"Average Training Loss: {train_total_loss / float(test_interval):.4f}"))
             train_cross_loss = train_mse_loss = train_icg_loss = train_total_loss = 0.0
         if (iter_num % test_interval) == 0:
-            Regression_test(args, dset_loaders['test'], Model_R, optimizer=optimizer, save=True, iter_num=iter_num)
+            Regression_test(args, dset_loaders['test'], model, optimizer=optimizer, save=True, iter_num=iter_num)
 
 
 def collect_samples_with_pseudo_label(model, threshold, sample_iter):
@@ -246,16 +246,16 @@ def collect_samples_with_pseudo_label(model, threshold, sample_iter):
             if sum(sel) == 0: continue
             preds = bins_deltas_to_ts_batch(cls, reg, ctr)
             img_lbl.extend(list(zip(imgs[sel].cpu(), preds[sel].cpu())))
-    print(f'---------finished, collected {len(img_lbl)} samples with {i} iters---------')
+    print(f'---------finished, collected {len(img_lbl)} samples with {i+1} iters---------')
     return img_lbl
 
 
-def selftrain_t(args, Model_R, sample_selected):
+def selftrain_t(args, model, sample_selected):
     global iter_source
     criterion = {"cls": xentropy, "reg": nn.MSELoss(), "icg": ExplicitInterClassGraphLoss()}
-    optimizer_dict = [{"params": filter(lambda p: p.requires_grad, Model_R.model_fc.parameters()), "lr": 0.03},
-                    {"params": filter(lambda p: p.requires_grad, Model_R.cls_layer.parameters()), "lr": 0.01},
-                    {"params": filter(lambda p: p.requires_grad, Model_R.reg_layer.parameters()), "lr": 0.01}]
+    optimizer_dict = [{"params": filter(lambda p: p.requires_grad, model.model_fc.parameters()), "lr": 0.03},
+                    {"params": filter(lambda p: p.requires_grad, model.cls_layer.parameters()), "lr": 0.01},
+                    {"params": filter(lambda p: p.requires_grad, model.reg_layer.parameters()), "lr": 0.01}]
     optimizer = optim.SGD(optimizer_dict, lr=0.03, momentum=0.9, weight_decay=0.0005, nesterov=True)
     train_cross_loss = train_mse_loss = train_icg_loss = train_total_loss = 0.0
     param_lr = []
@@ -264,7 +264,7 @@ def selftrain_t(args, Model_R, sample_selected):
     test_interval = 10
 
     for iter_num, (img, labelt) in enumerate(sample_selected):
-        Model_R.train()
+        model.train()
         optimizer = inv_lr_scheduler(param_lr, optimizer, iter_num, init_lr=args.lr, gamma=args.gamma, power=0.75,
                                     weight_decay=0.0005)
         optimizer.zero_grad()
@@ -276,20 +276,20 @@ def selftrain_t(args, Model_R, sample_selected):
             data_source = iter_source.next()
         inputs_source, labels_source = data_source
         labels_source = labels_source[:, 2].float()
-        cls_s, reg_s, fs = Model_R(inputs_source.cuda())
+        cls_s, reg_s, fs = model(inputs_source.cuda())
         bins_s, deltas_s = t_to_bin_delta_batch(labels_source.cuda(), ctr)
-        classifier_loss_s = criterion["cls"](cls_s, bins_s)
-        regressor_loss_s = criterion['reg'](reg_s, deltas_s)
+        classifier_loss_s = criterion["cls"](cls_s, bins_s) * args.cls_weight
+        regressor_loss_s = criterion['reg'](reg_s, deltas_s) * args.reg_weight
         icg_loss_s = criterion['icg'](torch.max(bins_s, dim=-1)[1], fs) * args.icg_weight
         total_loss_s = classifier_loss_s + regressor_loss_s + icg_loss_s
         total_loss_s *= args.src_loss_weight
         total_loss_s.backward()
 
         # pass tgt data
-        cls, reg, f = Model_R(img.cuda())
+        cls, reg, f = model(img.cuda())
         bins, deltas = t_to_bin_delta_batch(labelt.cuda(), ctr)
-        classifier_loss = criterion["cls"](cls, bins)
-        regressor_loss = criterion['reg'](reg, deltas)
+        classifier_loss = criterion["cls"](cls, bins) * args.cls_weight
+        regressor_loss = criterion['reg'](reg, deltas) * args.reg_weight
         icg_loss = criterion['icg'](torch.max(bins, dim=-1)[1], f) * args.icg_weight
         total_loss = classifier_loss + regressor_loss + icg_loss
         total_loss.backward()
@@ -305,7 +305,7 @@ def selftrain_t(args, Model_R, sample_selected):
                   f"Average ICG Loss: {train_icg_loss / float(test_interval):.4f}; "
                   f"Average Training Loss: {train_total_loss / float(test_interval):.4f}"))
             train_cross_loss = train_mse_loss = train_icg_loss = train_total_loss = 0.0
-            Regression_test(args, dset_loaders['test'], Model_R)
+            Regression_test(args, dset_loaders['test'], model, optimizer, save=True)
 
 
 if __name__ == '__main__':
@@ -323,6 +323,7 @@ if __name__ == '__main__':
     args.icg_weight = 1.0
     args.lr = 0.03  # init learning rate for fine-tune
     args.gamma = 0.0001  # learning rate decay
+    args.sample_iter = 500
     batch_size, dset_loaders = make_dataset(args)
     Model_R = Model_Regression().to(device)
 
@@ -334,6 +335,6 @@ if __name__ == '__main__':
     iter_target = iter(dset_loaders["val"])
     for _ in range(10):
         args.threshold -= args.threshold_decay
-        img_selected = collect_samples_with_pseudo_label(Model_R, args.threshold, sample_iter=200)
+        img_selected = collect_samples_with_pseudo_label(Model_R, args.threshold, sample_iter=args.sample_iter)
         img_selected = DataLoader(img_selected, batch_size=args.train_bs, shuffle=True, num_workers=16)
         selftrain_t(args, Model_R, img_selected)
