@@ -132,12 +132,14 @@ class Model_Regression(nn.Module):
         self.model_fc = model.Resnet18Fc()
         self.cls_layer = nn.Linear(512, 6)
         self.reg_layer = nn.Linear(512, 6)
+        self.sigmoid = nn.Sigmoid()
 
 
     def forward(self,x):
         feature = self.model_fc(x)
         cls= self.cls_layer(feature)
         reg = self.reg_layer(feature)
+        reg = self.sigmoid(reg)
         return cls, reg, feature
 
 
@@ -157,7 +159,7 @@ def pretrain_on_src(args, model):
     for param_group in optimizer.param_groups:
         param_lr.append(param_group["lr"])
 
-    test_interval = 100
+    test_interval = 10
     num_iter = 20002
     print(args)
     for iter_num in range(1, num_iter + 1):
@@ -308,6 +310,12 @@ def selftrain_t(args, model, sample_selected):
             Regression_test(args, dset_loaders['test'], model, optimizer, save=True)
 
 
+def ema(teacher_ema_model, student_model, global_step=1e5, a=0.96):
+    a = min(1 - 1 / (global_step + 1), a)
+    for ema_param, param in zip(teacher_ema_model.parameters(), student_model.parameters()):
+        ema_param.data.mul_(a).add_(param.data, alpha=1 - a)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PyTorch DAregre experiment')
     parser.add_argument('--gpu_id', type=str, nargs='?', default='0', help="device id to run")
@@ -315,26 +323,30 @@ if __name__ == '__main__':
     parser.add_argument('--tgt', type=str, default='n', metavar='S', help='target dataset')
     args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
-    args.train_bs = 128
+    args.train_bs = 36
     args.test_bs = 128
-    args.threshold = 0.47
-    args.threshold_decay = 0.0
-    args.src_loss_weight = 1.0
+    args.threshold = 0.95  # 0.8、0.47
+    args.threshold_decay = 0.01
+    args.src_loss_weight = 0.01
+    args.cls_weight = 1.0
+    args.reg_weight = 1.0
     args.icg_weight = 1.0
     args.lr = 0.03  # init learning rate for fine-tune
     args.gamma = 0.0001  # learning rate decay
     args.sample_iter = 500
     batch_size, dset_loaders = make_dataset(args)
     Model_R = Model_Regression().to(device)
+    Model_da = Model_Regression().to(device)
 
 
 
     # pretrain_on_src(args, Model_R)
-    Model_R.load_state_dict(torch.load('checkpoints/n->c-it_90-MAE_0.304.pth')['model'])
+    Model_R.load_state_dict(torch.load('checkpoints/c->s-it_None-MAE_0.293.pth')['model'])
     iter_source = iter(dset_loaders["train"])
     iter_target = iter(dset_loaders["val"])
-    for _ in range(10):
+    for _ in range(15):
         args.threshold -= args.threshold_decay
         img_selected = collect_samples_with_pseudo_label(Model_R, args.threshold, sample_iter=args.sample_iter)
         img_selected = DataLoader(img_selected, batch_size=args.train_bs, shuffle=True, num_workers=16)
-        selftrain_t(args, Model_R, img_selected)
+        selftrain_t(args, Model_da, img_selected)
+        ema(Model_R, Model_da)
